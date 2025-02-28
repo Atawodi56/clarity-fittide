@@ -37,6 +37,35 @@ Clarinet.test({
 });
 
 Clarinet.test({
+  name: "Test maximum duration and distance limits",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const wallet1 = accounts.get('wallet_1')!;
+    
+    // Test maximum duration exceeded
+    let block = chain.mineBlock([
+      Tx.contractCall('fit_tide', 'record-activity', [
+        types.ascii("swimming"),
+        types.uint(86401), // Exceeds 24 hours
+        types.uint(2000)
+      ], wallet1.address)
+    ]);
+    
+    block.receipts[0].result.expectErr(types.uint(104));
+    
+    // Test maximum distance exceeded
+    block = chain.mineBlock([
+      Tx.contractCall('fit_tide', 'record-activity', [
+        types.ascii("swimming"),
+        types.uint(3600),
+        types.uint(100001) // Exceeds 100km
+      ], wallet1.address)
+    ]);
+    
+    block.receipts[0].result.expectErr(types.uint(105));
+  },
+});
+
+Clarinet.test({
   name: "Test invalid activity type",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
@@ -49,12 +78,12 @@ Clarinet.test({
       ], wallet1.address)
     ]);
     
-    block.receipts[0].result.expectErr(types.uint(101)); // err-invalid-activity
+    block.receipts[0].result.expectErr(types.uint(101));
   },
 });
 
 Clarinet.test({
-  name: "Test achievement awarding",
+  name: "Test achievement awarding and duplicate prevention",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     
@@ -72,5 +101,16 @@ Clarinet.test({
     // Check achievement badge was minted
     const asset = chain.getAssetsMaps().nfts['fit_tide.achievement-badge'][wallet1.address];
     assertEquals(asset, types.uint(1));
+    
+    // Verify achievement is tracked in user stats
+    let statsBlock = chain.mineBlock([
+      Tx.contractCall('fit_tide', 'get-user-stats', [
+        types.principal(wallet1.address)
+      ], wallet1.address)
+    ]);
+    
+    const stats = statsBlock.receipts[0].result.expectOk().expectSome();
+    assertEquals(stats['achievement-points'], types.uint(1));
+    assertEquals(stats['achievements-earned'][0], types.uint(1));
   },
 });
