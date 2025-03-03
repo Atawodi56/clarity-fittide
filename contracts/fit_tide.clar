@@ -8,11 +8,17 @@
 (define-constant err-invalid-distance (err u103))
 (define-constant err-max-duration-exceeded (err u104))
 (define-constant err-max-distance-exceeded (err u105))
+(define-constant err-achievement-list-full (err u106))
 
 ;; Achievement Constants
 (define-constant ACHIEVEMENT-MILESTONE-1 u10)
 (define-constant MAX-DURATION u86400) ;; 24 hours in seconds
 (define-constant MAX-DISTANCE u100000) ;; 100km in meters
+
+;; Activity-specific limits
+(define-constant MAX-SWIMMING-DISTANCE u10000) ;; 10km
+(define-constant MAX-KAYAKING-DISTANCE u50000) ;; 50km
+(define-constant MAX-SURFING-DISTANCE u20000) ;; 20km
 
 ;; Data Variables
 (define-map user-stats
@@ -41,6 +47,9 @@
 
 (define-data-var activity-counter uint u0)
 
+;; Events
+(define-data-var last-achievement-id uint u0)
+
 ;; Public Functions
 
 (define-public (record-activity (activity-type (string-ascii 20)) (duration uint) (distance uint))
@@ -53,7 +62,7 @@
     (asserts! (> duration u0) err-invalid-duration)
     (asserts! (>= distance u0) err-invalid-distance)
     (asserts! (<= duration MAX-DURATION) err-max-duration-exceeded)
-    (asserts! (<= distance MAX-DISTANCE) err-max-distance-exceeded)
+    (asserts! (is-valid-distance activity-type distance) err-max-distance-exceeded)
     
     ;; Update activity counter
     (var-set activity-counter activity-id)
@@ -69,11 +78,8 @@
       }
     )
     
-    ;; Update user stats
-    (update-user-stats user-principal duration distance)
-    
-    ;; Check and award achievements
-    (try! (check-achievements user-principal))
+    ;; Update user stats and check achievements
+    (try! (update-user-stats-and-achievements user-principal duration distance))
     
     (ok activity-id)
   )
@@ -89,7 +95,17 @@
   )
 )
 
-(define-private (update-user-stats (user principal) (duration uint) (distance uint))
+(define-private (is-valid-distance (activity-type (string-ascii 20)) (distance uint))
+  (if (is-eq activity-type "swimming")
+      (<= distance MAX-SWIMMING-DISTANCE)
+      (if (is-eq activity-type "kayaking")
+          (<= distance MAX-KAYAKING-DISTANCE)
+          (<= distance MAX-SURFING-DISTANCE)
+      )
+  )
+)
+
+(define-private (update-user-stats-and-achievements (user principal) (duration uint) (distance uint))
   (let
     (
       (current-stats (default-to
@@ -101,40 +117,48 @@
           achievements-earned: (list)
         }
         (map-get? user-stats { user: user })))
+      (new-total-activities (+ (get total-activities current-stats) u1))
     )
     (map-set user-stats
       { user: user }
       {
-        total-activities: (+ (get total-activities current-stats) u1),
+        total-activities: new-total-activities,
         total-duration: (+ (get total-duration current-stats) duration),
         total-distance: (+ (get total-distance current-stats) distance),
         achievement-points: (get achievement-points current-stats),
         achievements-earned: (get achievements-earned current-stats)
       }
     )
+    (check-achievements user new-total-activities)
   )
 )
 
-(define-private (check-achievements (user principal))
+(define-private (check-achievements (user principal) (total-activities uint))
   (let
     (
       (stats (unwrap! (map-get? user-stats { user: user }) (err u0)))
+      (current-achievements (get achievements-earned stats))
     )
-    ;; Award achievements based on milestones
     (if (and
-      (>= (get total-activities stats) ACHIEVEMENT-MILESTONE-1)
+      (>= total-activities ACHIEVEMENT-MILESTONE-1)
       (is-none (nft-get-owner? achievement-badge u1))
-      (is-none (index-of (get achievements-earned stats) u1)))
+      (is-none (index-of current-achievements u1)))
       (begin
         (try! (nft-mint? achievement-badge u1 user))
-        (map-set user-stats
-          { user: user }
-          (merge stats {
-            achievement-points: (+ (get achievement-points stats) u1),
-            achievements-earned: (unwrap! (as-max-len? (append (get achievements-earned stats) u1) u10) (err u0))
-          })
+        (match (as-max-len? (append current-achievements u1) u10)
+          success (begin
+            (var-set last-achievement-id u1)
+            (map-set user-stats
+              { user: user }
+              (merge stats {
+                achievement-points: (+ (get achievement-points stats) u1),
+                achievements-earned: success
+              })
+            )
+            (ok true)
+          )
+          error (err err-achievement-list-full)
         )
-        (ok true)
       )
       (ok true)
     )
@@ -149,4 +173,8 @@
 
 (define-read-only (get-activity (activity-id uint) (user principal))
   (ok (map-get? activities { activity-id: activity-id, user: user }))
+)
+
+(define-read-only (get-last-achievement)
+  (ok (var-get last-achievement-id))
 )
